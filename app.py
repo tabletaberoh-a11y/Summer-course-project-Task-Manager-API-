@@ -1,52 +1,69 @@
 """
 app.py — Task Manager API
 
-A simple RESTful CRUD API for managing tasks, built with Flask.
+A RESTful CRUD API for managing tasks, built with Flask and backed by a
+real SQLite database (via Flask-SQLAlchemy).
 
 Data model (Task):
-    id           - int, auto-generated, unique
+    id           - int, auto-generated, unique (primary key)
     title        - string, required, cannot be empty
     description  - string, optional
     status       - string, "pending" or "completed" (defaults to "pending")
     created_at   - ISO 8601 timestamp, auto-generated
 
 Storage:
-    Tasks are kept in memory in a Python dict (`tasks_db`), keyed by id.
-    This keeps the project dependency-free and easy to run/grade, but
-    means data resets every time the server restarts. Swapping in a
-    real database (SQLite/Postgres) later would only require changing
-    the functions in this file that touch `tasks_db` — the route logic
-    and validation would stay the same.
+    Tasks are persisted in a SQLite database file (`tasks.db`), created
+    automatically the first time the app runs. Unlike in-memory storage,
+    data now survives server restarts. SQLAlchemy is used as the ORM
+    layer so the database can later be swapped for PostgreSQL/MySQL by
+    only changing the `SQLALCHEMY_DATABASE_URI` — no route code changes
+    needed.
 """
 
+import os
 from flask import Flask, request, jsonify
+from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timezone
-from itertools import count
+
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 app = Flask(__name__)
+app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{os.path.join(BASE_DIR, 'tasks.db')}"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# --- In-memory "database" ---
-tasks_db = {}
-id_counter = count(1)  # generates 1, 2, 3, ... for new task ids
+db = SQLAlchemy(app)
 
 VALID_STATUSES = {"pending", "completed"}
+
+
+# ---------------------------------------------------------------------
+# Database model
+# ---------------------------------------------------------------------
+class Task(db.Model):
+    __tablename__ = "tasks"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    title = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text, nullable=True, default="")
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    created_at = db.Column(
+        db.String(64), nullable=False,
+        default=lambda: datetime.now(timezone.utc).isoformat(),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description or "",
+            "status": self.status,
+            "created_at": self.created_at,
+        }
 
 
 def error_response(message, status_code):
     """Uniform JSON error shape for every failure case."""
     return jsonify({"error": message}), status_code
-
-
-def serialize_task(task):
-    """Return the task dict as-is (kept as a function so the JSON shape
-    is defined in exactly one place, in case fields change later)."""
-    return {
-        "id": task["id"],
-        "title": task["title"],
-        "description": task["description"],
-        "status": task["status"],
-        "created_at": task["created_at"],
-    }
 
 
 # ---------------------------------------------------------------------
@@ -68,17 +85,15 @@ def create_task():
             f"'status' must be one of {sorted(VALID_STATUSES)}.", 400
         )
 
-    task_id = next(id_counter)
-    task = {
-        "id": task_id,
-        "title": str(title).strip(),
-        "description": data.get("description", "") or "",
-        "status": status,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    tasks_db[task_id] = task
+    task = Task(
+        title=str(title).strip(),
+        description=data.get("description", "") or "",
+        status=status,
+    )
+    db.session.add(task)
+    db.session.commit()
 
-    return jsonify(serialize_task(task)), 201
+    return jsonify(task.to_dict()), 201
 
 
 # ---------------------------------------------------------------------
@@ -92,11 +107,12 @@ def get_tasks():
             f"'status' filter must be one of {sorted(VALID_STATUSES)}.", 400
         )
 
-    tasks = list(tasks_db.values())
+    query = Task.query
     if status_filter:
-        tasks = [t for t in tasks if t["status"] == status_filter]
+        query = query.filter_by(status=status_filter)
 
-    return jsonify([serialize_task(t) for t in tasks]), 200
+    tasks = query.order_by(Task.id).all()
+    return jsonify([t.to_dict() for t in tasks]), 200
 
 
 # ---------------------------------------------------------------------
@@ -104,10 +120,10 @@ def get_tasks():
 # ---------------------------------------------------------------------
 @app.route("/tasks/<int:task_id>", methods=["GET"])
 def get_task(task_id):
-    task = tasks_db.get(task_id)
+    task = db.session.get(Task, task_id)
     if task is None:
         return error_response(f"Task with id {task_id} not found.", 404)
-    return jsonify(serialize_task(task)), 200
+    return jsonify(task.to_dict()), 200
 
 
 # ---------------------------------------------------------------------
@@ -115,7 +131,7 @@ def get_task(task_id):
 # ---------------------------------------------------------------------
 @app.route("/tasks/<int:task_id>", methods=["PUT", "PATCH"])
 def update_task(task_id):
-    task = tasks_db.get(task_id)
+    task = db.session.get(Task, task_id)
     if task is None:
         return error_response(f"Task with id {task_id} not found.", 404)
 
@@ -134,19 +150,20 @@ def update_task(task_id):
     if "title" in data:
         if not str(data["title"]).strip():
             return error_response("'title' cannot be empty.", 400)
-        task["title"] = str(data["title"]).strip()
+        task.title = str(data["title"]).strip()
 
     if "description" in data:
-        task["description"] = data["description"] or ""
+        task.description = data["description"] or ""
 
     if "status" in data:
         if data["status"] not in VALID_STATUSES:
             return error_response(
                 f"'status' must be one of {sorted(VALID_STATUSES)}.", 400
             )
-        task["status"] = data["status"]
+        task.status = data["status"]
 
-    return jsonify(serialize_task(task)), 200
+    db.session.commit()
+    return jsonify(task.to_dict()), 200
 
 
 # ---------------------------------------------------------------------
@@ -154,16 +171,17 @@ def update_task(task_id):
 # ---------------------------------------------------------------------
 @app.route("/tasks/<int:task_id>", methods=["DELETE"])
 def delete_task(task_id):
-    task = tasks_db.get(task_id)
+    task = db.session.get(Task, task_id)
     if task is None:
         return error_response(f"Task with id {task_id} not found.", 404)
 
-    del tasks_db[task_id]
+    db.session.delete(task)
+    db.session.commit()
     return jsonify({"message": f"Task with id {task_id} deleted successfully."}), 200
 
 
 # ---------------------------------------------------------------------
-# Generic error handlers (e.g. hitting a route/id type that doesn't exist)
+# Generic error handlers
 # ---------------------------------------------------------------------
 @app.errorhandler(404)
 def handle_404(e):
@@ -180,6 +198,7 @@ def index():
     return jsonify(
         {
             "message": "Task Manager API is running.",
+            "database": "SQLite (tasks.db)",
             "endpoints": {
                 "POST /tasks": "Create a new task",
                 "GET /tasks": "Retrieve all tasks (optional ?status=pending|completed)",
@@ -190,6 +209,12 @@ def index():
             },
         }
     )
+
+
+# Create the database tables (and the tasks.db file) automatically the
+# first time the app starts, if they don't already exist.
+with app.app_context():
+    db.create_all()
 
 
 if __name__ == "__main__":

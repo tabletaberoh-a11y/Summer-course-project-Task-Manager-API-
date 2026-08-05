@@ -1,7 +1,7 @@
 # Task Manager API
 
 A RESTful API for managing daily tasks through standard CRUD operations,
-built with **Flask** (Python).
+built with **Flask** (Python) and backed by a real **SQLite database**.
 
 ## What it does
 
@@ -24,7 +24,7 @@ codes/error handling.
 ## Requirements
 
 - Python 3.8+
-- Flask (see `requirements.txt`)
+- Flask and Flask-SQLAlchemy (see `requirements.txt`)
 
 ## Setup & How to Run
 
@@ -46,9 +46,15 @@ python3 app.py
 
 The API will start at `http://127.0.0.1:5000`.
 
-Storage is **in-memory** — no database setup required. Note that all
-tasks are lost when the server restarts (by design, to keep this simple
-and dependency-free).
+Storage is a **SQLite database**. A file called `tasks.db` is created
+automatically in the project folder the first time you run the app —
+no manual database setup or separate server required. Unlike in-memory
+storage, your tasks **persist across restarts**: stop the server, start
+it again, and everything you created is still there.
+
+If you ever want to start over with a clean slate, just delete
+`tasks.db` and restart the app — a fresh, empty database will be
+created automatically.
 
 ## Endpoints
 
@@ -252,14 +258,20 @@ endpoints into **Postman**:
 
 ```
 task-manager-api/
-├── app.py              # Flask app: routes, validation, error handling
+├── app.py              # Flask app: routes, DB model, validation, error handling
 ├── requirements.txt    # Python dependencies
+├── tasks.db             # SQLite database file (auto-created on first run, not committed to git)
 └── README.md           # This file
 ```
 
+> `tasks.db` is created automatically the first time you run `app.py`
+> and should be added to `.gitignore` so it isn't committed to GitHub
+> (everyone running the project should start with their own fresh
+> database).
+
 ## Possible Improvements
 
-- Replace in-memory storage with SQLite/PostgreSQL for persistence
+- Swap SQLite for PostgreSQL/MySQL for production use (only `SQLALCHEMY_DATABASE_URI` needs to change)
 - Add pagination to `GET /tasks`
 - Add due dates and priority levels to the task model
 - Add authentication so tasks are scoped per user
